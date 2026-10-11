@@ -1,7 +1,8 @@
 using UnityEngine;
 using TMPro;
 using UnityEngine.SceneManagement;
-using UnityEngine.UI; // Added for UI Slider
+using UnityEngine.UI;
+using System.Collections;
 
 public class PlayerMovement : MonoBehaviour
 {
@@ -10,16 +11,28 @@ public class PlayerMovement : MonoBehaviour
     public float dashDuration = 0.2f;
 
     public CameraScroll mainCameraScript;
-    public ObjectSpawner spawnerScript; // Reference to stop spawning
+    public ObjectSpawner spawnerScript;
 
-    // Oxygen
-    public TextMeshProUGUI oxygenText;
+    public float screenMinX = -8.5f;
+    public float screenMaxX = 8.5f;
+
+    // Harpoon Settings
+    public GameObject harpoonPrefab;
+    public float harpoonCooldown = 1.0f;
+    private float nextHarpoonTime = 0f;
+    private Vector3 lastAimDirection = Vector3.up; // Default aim direction
+
+    public GameObject bossPrefab;
+
+    // UI Settings
+    public Slider oxygenSlider;
+    public Image oxygenFillImage;
     public float maxOxygen = 100f;
     public float oxygenDrainRate = 5f;
     private float currentOxygen;
 
-    // Pearls and Progression
     public Slider pearlProgressBar;
+    public TextMeshProUGUI bossWarningText;
     private int collectedPearls = 0;
     private bool bossSequenceStarted = false;
 
@@ -29,25 +42,35 @@ public class PlayerMovement : MonoBehaviour
     private Vector3 movement;
     private bool hasJumped = false;
     private float introDropTimer = 0f;
+    private Camera mainCam;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
+        mainCam = Camera.main;
         currentOxygen = maxOxygen;
 
-        // Initialize pearl progress bar
         if (pearlProgressBar != null)
         {
             pearlProgressBar.maxValue = 10;
             pearlProgressBar.value = 0;
         }
+
+        if (oxygenSlider != null)
+        {
+            oxygenSlider.maxValue = maxOxygen;
+            oxygenSlider.value = currentOxygen;
+        }
+
+        if (bossWarningText != null) bossWarningText.gameObject.SetActive(false);
     }
 
     void Update()
     {
+        // 1. GAME START / DROP FROM BOAT (ONLY WITH "JUMP" BUTTON)
         if (!hasJumped)
         {
-            if (Input.GetButtonDown("Jump") || Input.GetButtonDown("Fire1"))
+            if (Input.GetButtonDown("Jump"))
             {
                 hasJumped = true;
                 introDropTimer = 0.5f;
@@ -56,41 +79,43 @@ public class PlayerMovement : MonoBehaviour
             return;
         }
 
-        // Stop oxygen drain if boss sequence is active
-        if (!bossSequenceStarted)
-        {
-            currentOxygen -= oxygenDrainRate * Time.deltaTime;
-        }
+        if (!bossSequenceStarted) currentOxygen -= oxygenDrainRate * Time.deltaTime;
 
-        if (oxygenText != null)
+        if (oxygenSlider != null)
         {
-            oxygenText.text = "Oxygen: " + Mathf.Round(currentOxygen).ToString();
-
+            oxygenSlider.value = currentOxygen;
             if (currentOxygen < 25f && currentOxygen > 0)
             {
-                oxygenText.color = Color.red;
+                if (oxygenFillImage != null) oxygenFillImage.color = Color.red;
                 if (mainCameraScript != null) mainCameraScript.isShaking = true;
             }
             else
             {
-                oxygenText.color = Color.white;
+                if (oxygenFillImage != null) oxygenFillImage.color = Color.cyan;
                 if (mainCameraScript != null) mainCameraScript.isShaking = false;
             }
         }
 
         if (currentOxygen <= 0) Die();
 
-        // Movement
+        // Movement and Aiming Logic
         if (introDropTimer > 0)
         {
             introDropTimer -= Time.deltaTime;
             movement = new Vector3(0f, -1f, 0f);
+            lastAimDirection = Vector3.down; // Aim down during the initial drop
         }
         else
         {
             float moveX = Input.GetAxis("Horizontal");
             float moveY = Input.GetAxis("Vertical");
             movement = new Vector3(moveX, moveY, 0f);
+
+            // Update last aim direction if the player is actively moving the joystick
+            if (movement.magnitude > 0.1f)
+            {
+                lastAimDirection = movement.normalized;
+            }
         }
 
         if (isDashing)
@@ -99,7 +124,7 @@ public class PlayerMovement : MonoBehaviour
             if (dashTimer <= 0) isDashing = false;
         }
 
-        if (introDropTimer <= 0 && (Input.GetButtonDown("Fire1") || Input.GetButtonDown("Jump")))
+        if (introDropTimer <= 0 && Input.GetButtonDown("Jump"))
         {
             if (!isDashing)
             {
@@ -107,43 +132,74 @@ public class PlayerMovement : MonoBehaviour
                 dashTimer = dashDuration;
             }
         }
+
+        // Harpoon Shooting Logic
+        if (introDropTimer <= 0 && Input.GetButtonDown("Fire1") && Time.time >= nextHarpoonTime)
+        {
+            ShootHarpoon();
+            nextHarpoonTime = Time.time + harpoonCooldown;
+        }
     }
 
     void FixedUpdate()
     {
         if (!hasJumped) return;
-
         if (isDashing) rb.linearVelocity = movement.normalized * dashSpeed;
         else rb.linearVelocity = movement.normalized * moveSpeed;
     }
 
+    void LateUpdate()
+    {
+        Vector3 clampedPosition = transform.position;
+        clampedPosition.x = Mathf.Clamp(clampedPosition.x, screenMinX, screenMaxX);
+        transform.position = clampedPosition;
+    }
+
+    void ShootHarpoon()
+    {
+        if (harpoonPrefab != null)
+        {
+            // Spawn harpoon slightly in front of the aiming direction
+            Vector3 spawnPosition = transform.position + (lastAimDirection * 1.5f);
+            GameObject newHarpoon = Instantiate(harpoonPrefab, spawnPosition, Quaternion.identity);
+
+            // Rotate harpoon tip to face the aim direction
+            newHarpoon.transform.up = lastAimDirection;
+
+            // Assign direction to the Harpoon script
+            Harpoon harpoonScript = newHarpoon.GetComponent<Harpoon>();
+            if (harpoonScript != null)
+            {
+                harpoonScript.direction = lastAimDirection;
+            }
+        }
+    }
+
     void OnCollisionEnter(Collision collision)
     {
-        if (collision.gameObject.CompareTag("DeathWall")) Die();
+        if (collision.gameObject.CompareTag("DeathWall"))
+        {
+            if (!bossSequenceStarted) Die();
+        }
     }
 
     void OnTriggerEnter(Collider other)
     {
         if (other.CompareTag("Oxygen"))
         {
-            currentOxygen += 30f;
+            currentOxygen += 40f;
             if (currentOxygen > maxOxygen) currentOxygen = maxOxygen;
             Destroy(other.gameObject);
         }
 
-        if (other.CompareTag("Enemy"))
-        {
-            Die();
-        }
+        if (other.CompareTag("Enemy")) Die();
 
-        // Collect Pearls
         if (other.CompareTag("Pearl"))
         {
             collectedPearls++;
             if (pearlProgressBar != null) pearlProgressBar.value = collectedPearls;
             Destroy(other.gameObject);
 
-            // Check for Boss Trigger
             if (collectedPearls >= 10 && !bossSequenceStarted)
             {
                 StartBossSequence();
@@ -154,15 +210,35 @@ public class PlayerMovement : MonoBehaviour
     void StartBossSequence()
     {
         bossSequenceStarted = true;
-        Debug.Log("10 Pearls Collected! BOSS AWAKENING COUNTDOWN STARTED!");
+        if (spawnerScript != null) spawnerScript.isSpawningActive = false;
+        if (mainCameraScript != null) mainCameraScript.isDiving = false;
+        StartCoroutine(BossCountdownRoutine());
+    }
 
-        // Stop spawning new items/enemies
-        if (spawnerScript != null)
+    private IEnumerator BossCountdownRoutine()
+    {
+        if (bossWarningText != null)
         {
-            spawnerScript.isSpawningActive = false;
+            bossWarningText.gameObject.SetActive(true);
+            bossWarningText.text = "BOSS COMING!";
+            yield return new WaitForSeconds(1.5f);
+            bossWarningText.text = "3";
+            yield return new WaitForSeconds(1f);
+            bossWarningText.text = "2";
+            yield return new WaitForSeconds(1f);
+            bossWarningText.text = "1";
+            yield return new WaitForSeconds(1f);
+            bossWarningText.text = "FIGHT!";
+            yield return new WaitForSeconds(1f);
+            bossWarningText.gameObject.SetActive(false);
         }
 
-        // We will add the UI countdown and Boss spawning logic here next
+        // Spawn the Boss at the very top edge of the CAMERA
+        if (bossPrefab != null && mainCam != null)
+        {
+            Vector3 spawnPos = new Vector3(0f, mainCam.transform.position.y + 4.5f, 0f);
+            Instantiate(bossPrefab, spawnPos, Quaternion.identity);
+        }
     }
 
     void Die()

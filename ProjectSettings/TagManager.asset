@@ -8,6 +8,8 @@ TagManager:
   - Oxygen
   - Enemy
   - Pearl
+  - Harpoon
+  - Boss
   layers:
   - Default
   - TransparentFX
