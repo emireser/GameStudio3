@@ -16,11 +16,13 @@ public class PlayerMovement : MonoBehaviour
     public float screenMinX = -8.5f;
     public float screenMaxX = 8.5f;
 
+    public SpriteRenderer spriteRend;
+
     // Harpoon Settings
     public GameObject harpoonPrefab;
     public float harpoonCooldown = 1.0f;
     private float nextHarpoonTime = 0f;
-    private Vector3 lastAimDirection = Vector3.up; // Default aim direction
+    private Vector3 lastAimDirection = Vector3.up;
 
     public GameObject bossPrefab;
 
@@ -67,7 +69,6 @@ public class PlayerMovement : MonoBehaviour
 
     void Update()
     {
-        // 1. GAME START / DROP FROM BOAT (ONLY WITH "JUMP" BUTTON)
         if (!hasJumped)
         {
             if (Input.GetButtonDown("Jump"))
@@ -98,12 +99,11 @@ public class PlayerMovement : MonoBehaviour
 
         if (currentOxygen <= 0) Die();
 
-        // Movement and Aiming Logic
         if (introDropTimer > 0)
         {
             introDropTimer -= Time.deltaTime;
             movement = new Vector3(0f, -1f, 0f);
-            lastAimDirection = Vector3.down; // Aim down during the initial drop
+            lastAimDirection = Vector3.down;
         }
         else
         {
@@ -111,10 +111,15 @@ public class PlayerMovement : MonoBehaviour
             float moveY = Input.GetAxis("Vertical");
             movement = new Vector3(moveX, moveY, 0f);
 
-            // Update last aim direction if the player is actively moving the joystick
             if (movement.magnitude > 0.1f)
             {
                 lastAimDirection = movement.normalized;
+            }
+
+            if (spriteRend != null)
+            {
+                if (moveX > 0) spriteRend.flipX = false;
+                else if (moveX < 0) spriteRend.flipX = true;
             }
         }
 
@@ -133,7 +138,6 @@ public class PlayerMovement : MonoBehaviour
             }
         }
 
-        // Harpoon Shooting Logic
         if (introDropTimer <= 0 && Input.GetButtonDown("Fire1") && Time.time >= nextHarpoonTime)
         {
             ShootHarpoon();
@@ -159,14 +163,11 @@ public class PlayerMovement : MonoBehaviour
     {
         if (harpoonPrefab != null)
         {
-            // Spawn harpoon slightly in front of the aiming direction
             Vector3 spawnPosition = transform.position + (lastAimDirection * 1.5f);
             GameObject newHarpoon = Instantiate(harpoonPrefab, spawnPosition, Quaternion.identity);
 
-            // Rotate harpoon tip to face the aim direction
             newHarpoon.transform.up = lastAimDirection;
 
-            // Assign direction to the Harpoon script
             Harpoon harpoonScript = newHarpoon.GetComponent<Harpoon>();
             if (harpoonScript != null)
             {
@@ -181,6 +182,10 @@ public class PlayerMovement : MonoBehaviour
         {
             if (!bossSequenceStarted) Die();
         }
+        else if (collision.gameObject.CompareTag("Enemy") || collision.gameObject.CompareTag("Boss"))
+        {
+            Die();
+        }
     }
 
     void OnTriggerEnter(Collider other)
@@ -192,18 +197,70 @@ public class PlayerMovement : MonoBehaviour
             Destroy(other.gameObject);
         }
 
-        if (other.CompareTag("Enemy")) Die();
+        if (other.CompareTag("Enemy") || other.CompareTag("Boss")) Die();
 
         if (other.CompareTag("Pearl"))
         {
-            collectedPearls++;
-            if (pearlProgressBar != null) pearlProgressBar.value = collectedPearls;
-            Destroy(other.gameObject);
+            // 1. Disable collision immediately so it isn't collected twice
+            Collider col = other.GetComponent<Collider>();
+            if (col != null) col.enabled = false;
 
-            if (collectedPearls >= 10 && !bossSequenceStarted)
-            {
-                StartBossSequence();
-            }
+            // 2. Start the flying animation to the UI slider
+            StartCoroutine(FlyPearlToUI(other.gameObject));
+        }
+    }
+
+    // NEW: Pearl Flying Coroutine
+    private IEnumerator FlyPearlToUI(GameObject pearl)
+    {
+        // Fallback if UI components are missing
+        if (pearlProgressBar == null || mainCam == null)
+        {
+            CollectPearlLogic();
+            Destroy(pearl);
+            yield break;
+        }
+
+        Vector3 startPos = pearl.transform.position;
+        Vector3 startScale = pearl.transform.localScale;
+        float duration = 0.5f; // Flight time (half a second)
+        float elapsedTime = 0f;
+
+        while (elapsedTime < duration)
+        {
+            if (pearl == null) yield break;
+
+            elapsedTime += Time.deltaTime;
+            float t = elapsedTime / duration;
+
+            // Smooth ease-in effect
+            float smoothT = t * t * (3f - 2f * t);
+
+            // Convert UI screen position to a World position
+            Vector3 screenPos = pearlProgressBar.transform.position;
+            screenPos.z = Mathf.Abs(mainCam.transform.position.z);
+            Vector3 targetWorldPos = mainCam.ScreenToWorldPoint(screenPos);
+            targetWorldPos.z = 0f;
+
+            // Move and shrink the pearl towards the slider
+            pearl.transform.position = Vector3.Lerp(startPos, targetWorldPos, smoothT);
+            pearl.transform.localScale = Vector3.Lerp(startScale, startScale * 0.3f, smoothT);
+
+            yield return null;
+        }
+
+        Destroy(pearl);
+        CollectPearlLogic(); // Add to UI counter AFTER the flight is done
+    }
+
+    private void CollectPearlLogic()
+    {
+        collectedPearls++;
+        if (pearlProgressBar != null) pearlProgressBar.value = collectedPearls;
+
+        if (collectedPearls >= 10 && !bossSequenceStarted)
+        {
+            StartBossSequence();
         }
     }
 
@@ -233,7 +290,6 @@ public class PlayerMovement : MonoBehaviour
             bossWarningText.gameObject.SetActive(false);
         }
 
-        // Spawn the Boss at the very top edge of the CAMERA
         if (bossPrefab != null && mainCam != null)
         {
             Vector3 spawnPos = new Vector3(0f, mainCam.transform.position.y + 4.5f, 0f);
